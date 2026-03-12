@@ -30,6 +30,8 @@ class TemplateMetadata:
 
     stop_strings: List[str] = field(default_factory=list)
     tool_start: Optional[str] = None
+    tool_end: Optional[str] = None
+    tool_format: str = "json"
 
 
 class PromptTemplate:
@@ -76,6 +78,14 @@ class PromptTemplate:
             if isinstance(template_module.tool_start, str):
                 template_metadata.tool_start = template_module.tool_start
 
+        if hasattr(template_module, "tool_end"):
+            if isinstance(template_module.tool_end, str):
+                template_metadata.tool_end = template_module.tool_end
+
+        if hasattr(template_module, "tool_format"):
+            if isinstance(template_module.tool_format, str):
+                template_metadata.tool_format = template_module.tool_format
+
         self.metadata = template_metadata
         return template_metadata
 
@@ -105,8 +115,18 @@ class PromptTemplate:
         def raise_exception(message):
             raise TemplateError(message)
 
+        def tojson(value, ensure_ascii=True):
+            return json.dumps(value, ensure_ascii=ensure_ascii)
+
+        def fromjson(value):
+            return json.loads(value)
+
         self.environment.globals["strftime_now"] = strftime_now
         self.environment.globals["raise_exception"] = raise_exception
+        self.environment.globals["tojson"] = tojson
+        self.environment.filters["tojson"] = tojson
+        self.environment.globals["fromjson"] = fromjson
+        self.environment.filters["fromjson"] = fromjson
 
         return self.environment.from_string(template_str)
 

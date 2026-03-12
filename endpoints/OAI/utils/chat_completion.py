@@ -45,7 +45,10 @@ def _create_response(
 
         tool_calls = generation["tool_calls"]
         if tool_calls:
-            message.tool_calls = ToolCallProcessor.from_json(tool_calls)
+            if "tool_calls_parsed" in generation:
+                message.tool_calls = generation["tool_calls_parsed"]
+            else:
+                message.tool_calls = ToolCallProcessor.from_json(tool_calls)
 
         logprob_response = None
 
@@ -144,9 +147,16 @@ def _create_stream_chunk(
         # Mark finish_reason as tool_calls since this is the last chunk
         if "tool_calls" in generation:
             tool_calls = generation["tool_calls"]
-            message = ChatCompletionMessage(
-                tool_calls=ToolCallProcessor.from_json(tool_calls)
-            )
+            if "tool_calls_parsed" in generation:
+                message = ChatCompletionMessage(
+                    role="assistant",
+                    tool_calls=generation["tool_calls_parsed"],
+                )
+            else:
+                message = ChatCompletionMessage(
+                    role="assistant",
+                    tool_calls=ToolCallProcessor.from_json(tool_calls),
+                )
             choice.delta = message
             choice.finish_reason = "tool_calls"
 
@@ -466,14 +476,25 @@ async def generate_tool_calls(
     request: Request,
 ):
     gen_tasks: List[asyncio.Task] = []
-    tool_start = model.container.prompt_template.metadata.tool_start
+    metadata = model.container.prompt_template.metadata
+    tool_start = metadata.tool_start
+    tool_end = metadata.tool_end
+    tool_format = metadata.tool_format
 
     # Tracks which generations asked for a tool call
     tool_idx: List[int] = []
 
-    # Copy to make sure the parent JSON schema doesn't get modified
+    # Copy to make sure the parent params don't get modified
     tool_data = data.model_copy(deep=True)
-    tool_data.json_schema = TOOL_CALL_SCHEMA
+
+    if tool_format == "native":
+        # For native format, let the model generate tool calls freely
+        # Remove tool_start from stop strings so multi-call sequences work
+        if isinstance(tool_data.stop, list):
+            tool_data.stop = [s for s in tool_data.stop if s != tool_start]
+    else:
+        # Default JSON-constrained generation
+        tool_data.json_schema = TOOL_CALL_SCHEMA
 
     for idx, gen in enumerate(generations):
         if gen["stop_str"] != tool_start:
@@ -482,9 +503,14 @@ async def generate_tool_calls(
         logger.info(f"Detected tool call in chat completion request {request.state.id}")
 
         # Append the existing generation text if present
+        tool_prompt = prompt
         precursor_text = gen.get("full_text")
         if precursor_text:
-            prompt = prompt + precursor_text
+            tool_prompt = tool_prompt + precursor_text
+
+        # For native format, add tool_start back so the model continues naturally
+        if tool_format == "native":
+            tool_prompt = tool_prompt + tool_start
 
         gen_request_id = gen.get("request_id")
         tool_request_id = f"{gen_request_id}-tool"
@@ -493,7 +519,7 @@ async def generate_tool_calls(
             asyncio.create_task(
                 model.container.generate(
                     tool_request_id,
-                    prompt,
+                    tool_prompt,
                     tool_data,
                     mm_embeddings=embeddings,
                 )
@@ -508,5 +534,13 @@ async def generate_tool_calls(
         # Map tool calls to their appropriate generation
         for gen_idx, tool_call in zip(tool_idx, tool_calls, strict=True):
             generations[gen_idx]["tool_calls"] = tool_call["text"]
+
+            # For native format, parse inline and store as pre-parsed marker
+            if tool_format == "native":
+                generations[gen_idx]["tool_calls_parsed"] = (
+                    ToolCallProcessor.from_native_xml(
+                        tool_call["text"], tool_start, tool_end or "</tool_call>"
+                    )
+                )
 
     return generations

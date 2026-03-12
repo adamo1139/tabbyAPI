@@ -1,4 +1,5 @@
 import json
+import re
 from loguru import logger
 from typing import List
 
@@ -34,12 +35,67 @@ class ToolCallProcessor:
         """Postprocess tool call JSON to a parseable class"""
 
         tool_calls = json.loads(tool_calls_str)
-        for tool_call in tool_calls:
+        for idx, tool_call in enumerate(tool_calls):
             tool_call["function"]["arguments"] = json.dumps(
                 tool_call["function"]["arguments"]
             )
+            tool_call["index"] = idx
 
         return [ToolCall(**tool_call) for tool_call in tool_calls]
+
+    @staticmethod
+    def from_native_xml(
+        raw_text: str,
+        tool_start: str = "<tool_call>",
+        tool_end: str = "</tool_call>",
+    ) -> List[ToolCall]:
+        """Parse native XML-style tool calls (e.g. GLM-4 format) into ToolCall objects.
+
+        Expected format per call:
+        <tool_call>func_name<arg_key>k</arg_key><arg_value>v</arg_value>...</tool_call>
+        """
+
+        # Wrap raw_text so regex can match consistently
+        text = tool_start + raw_text
+
+        # Escape markers for regex
+        start_re = re.escape(tool_start)
+        end_re = re.escape(tool_end)
+
+        pattern = rf"{start_re}(.*?){end_re}"
+        matches = re.findall(pattern, text, re.DOTALL)
+
+        tool_calls = []
+        for idx, match in enumerate(matches):
+            # Function name is everything before the first <arg_key>
+            name_match = re.match(r"([^<]+)", match.strip())
+            if not name_match:
+                logger.warning(f"Could not parse tool call function name from: {match}")
+                continue
+            func_name = name_match.group(1).strip()
+
+            # Extract key-value pairs
+            args = {}
+            kv_pattern = r"<arg_key>(.*?)</arg_key>\s*<arg_value>(.*?)</arg_value>"
+            for key, value in re.findall(kv_pattern, match, re.DOTALL):
+                key = key.strip()
+                value = value.strip()
+                try:
+                    args[key] = json.loads(value)
+                except (json.JSONDecodeError, ValueError):
+                    args[key] = value
+
+            tool_calls.append(
+                ToolCall(
+                    index=idx,
+                    function={"name": func_name, "arguments": json.dumps(args)},
+                )
+            )
+
+        if not tool_calls:
+            logger.warning(f"No tool calls parsed from native XML output: {raw_text}")
+
+        return tool_calls
 
     @staticmethod
     def dump(tool_calls: List[ToolCall]) -> List[dict]:
