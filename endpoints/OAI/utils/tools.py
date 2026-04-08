@@ -43,6 +43,132 @@ class ToolCallProcessor:
 
         return [ToolCall(**tool_call) for tool_call in tool_calls]
 
+
+    @staticmethod
+    def from_qwen3_xml(
+        raw_text: str,
+        tool_start: str = "<tool_call>",
+        tool_end: str = "</tool_call>",
+    ) -> List[ToolCall]:
+        """Parse Qwen3-style XML tool calls into ToolCall objects.
+
+        Expected format per call:
+        <tool_call><function=name><parameter=key>value</parameter></function></tool_call>
+        """
+
+        text = raw_text.strip()
+        start_re = re.escape(tool_start)
+        end_re = re.escape(tool_end)
+
+        pattern = rf"{start_re}(.*?){end_re}"
+        matches = re.findall(pattern, text, re.DOTALL)
+
+        if not matches:
+            text = tool_start + raw_text
+            matches = re.findall(pattern, text, re.DOTALL)
+
+        tool_calls = []
+        for idx, match in enumerate(matches):
+            match = match.strip()
+            
+            # Extract function name
+            func_match = re.search(r"<function=(\w+)>", match)
+            if not func_match:
+                logger.warning(f"Could not parse function name from: {match}")
+                continue
+            func_name = func_match.group(1)
+
+            # Extract parameters
+            args = {}
+            param_pattern = r"<parameter=(\w+)>((?:(?!</parameter>).)*)"
+            for key, value in re.findall(param_pattern, match, re.DOTALL):
+                value = value.strip()
+                try:
+                    args[key] = json.loads(value)
+                except (json.JSONDecodeError, ValueError):
+                    args[key] = value
+
+            tool_calls.append(
+                ToolCall(
+                    index=idx,
+                    function={"name": func_name, "arguments": json.dumps(args)},
+                )
+            )
+
+        if not tool_calls:
+            logger.warning(f"No tool calls parsed from Qwen3 XML output: {raw_text}")
+
+        return tool_calls
+
+    @staticmethod
+    def from_qwen3(
+        raw_text: str,
+        tool_start: str = "<|tool_start|>",
+        tool_end: str = "<|tool_end|>",
+    ) -> List[ToolCall]:
+        """Parse Qwen3-style tool calls into ToolCall objects.
+
+        Expected format:
+        <|tool_start|>[{"name": "func", "arguments": {...}}]<|tool_end|>
+        """
+
+        text = raw_text.strip()
+
+        start_re = re.escape(tool_start)
+        end_re = re.escape(tool_end)
+
+        pattern = rf"{start_re}\s*(.*?)\s*{end_re}"
+        matches = re.findall(pattern, text, re.DOTALL)
+
+        if not matches:
+            pattern = rf"{start_re}\s*(.*)"
+            matches = re.findall(pattern, text, re.DOTALL)
+            if matches and tool_end in text:
+                matches[0] = matches[0].rsplit(tool_end, 1)[0]
+
+        tool_calls = []
+        for idx, match in enumerate(matches):
+            match = match.strip()
+            if not match:
+                continue
+
+            try:
+                parsed = json.loads(match)
+            except json.JSONDecodeError:
+                logger.warning(f"Could not parse Qwen3 tool call JSON: {match}")
+                continue
+
+            if isinstance(parsed, dict):
+                parsed = [parsed]
+            elif not isinstance(parsed, list):
+                logger.warning(f"Unexpected Qwen3 tool call format: {match}")
+                continue
+
+            for item in parsed:
+                func_name = item.get("name", "")
+                arguments = item.get("arguments", {})
+
+                if isinstance(arguments, str):
+                    try:
+                        arguments = json.loads(arguments)
+                    except json.JSONDecodeError:
+                        pass
+
+                tool_calls.append(
+                    ToolCall(
+                        index=len(tool_calls),
+                        function={
+                            "name": func_name,
+                            "arguments": json.dumps(arguments),
+                        },
+                    )
+                )
+
+        if not tool_calls:
+            logger.warning(f"No tool calls parsed from Qwen3 output: {raw_text}")
+
+        return tool_calls
+
     @staticmethod
     def from_native_xml(
         raw_text: str,

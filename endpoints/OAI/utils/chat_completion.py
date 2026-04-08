@@ -492,6 +492,11 @@ async def generate_tool_calls(
         # Remove tool_start from stop strings so multi-call sequences work
         if isinstance(tool_data.stop, list):
             tool_data.stop = [s for s in tool_data.stop if s != tool_start]
+    elif tool_format in ("qwen3", "qwen3_xml"):
+        # For Qwen3 formats, let the model generate freely (no JSON schema constraint)
+        # Remove tool_start from stop strings so multi-call sequences work
+        if isinstance(tool_data.stop, list):
+            tool_data.stop = [s for s in tool_data.stop if s != tool_start]
     else:
         # Default JSON-constrained generation
         tool_data.json_schema = TOOL_CALL_SCHEMA
@@ -508,8 +513,8 @@ async def generate_tool_calls(
         if precursor_text:
             tool_prompt = tool_prompt + precursor_text
 
-        # For native format, add tool_start back so the model continues naturally
-        if tool_format == "native":
+        # For native/Qwen3 format, add tool_start back so the model continues naturally
+        if tool_format in ("native", "qwen3", "qwen3_xml"):
             tool_prompt = tool_prompt + tool_start
 
         gen_request_id = gen.get("request_id")
@@ -535,12 +540,25 @@ async def generate_tool_calls(
         for gen_idx, tool_call in zip(tool_idx, tool_calls, strict=True):
             generations[gen_idx]["tool_calls"] = tool_call["text"]
 
-            # For native format, parse inline and store as pre-parsed marker
+            # For native/Qwen3 format, parse inline and store as pre-parsed marker
             if tool_format == "native":
                 generations[gen_idx]["tool_calls_parsed"] = (
                     ToolCallProcessor.from_native_xml(
                         tool_call["text"], tool_start, tool_end or "</tool_call>"
                     )
                 )
+            elif tool_format in ("qwen3", "qwen3_xml"):
+                if tool_format == "qwen3":
+                    generations[gen_idx]["tool_calls_parsed"] = (
+                        ToolCallProcessor.from_qwen3(
+                            tool_call["text"], tool_start, tool_end
+                        )
+                    )
+                else:  # qwen3_xml
+                    generations[gen_idx]["tool_calls_parsed"] = (
+                        ToolCallProcessor.from_qwen3_xml(
+                            tool_call["text"], tool_start, tool_end
+                        )
+                    )
 
     return generations
