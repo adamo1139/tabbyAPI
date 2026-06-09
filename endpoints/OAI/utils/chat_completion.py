@@ -362,6 +362,10 @@ async def stream_generate_chat_completion(
 
             generation = await gen_queue.get()
 
+            # Stream collector will push an exception to the queue if it fails
+            if isinstance(generation, Exception):
+                raise generation
+
             # Handle options if a tool model is present
             if tool_start:
                 if "stop_str" in generation:
@@ -377,10 +381,6 @@ async def stream_generate_chat_completion(
                     generation = generations[0]
                 elif "text" in generation:
                     current_generation_text += generation["text"]
-
-            # Stream collector will push an exception to the queue if it fails
-            if isinstance(generation, Exception):
-                raise generation
 
             response = _create_stream_chunk(
                 request.state.id, generation, model_path.name
@@ -492,8 +492,8 @@ async def generate_tool_calls(
         # Remove tool_start from stop strings so multi-call sequences work
         if isinstance(tool_data.stop, list):
             tool_data.stop = [s for s in tool_data.stop if s != tool_start]
-    elif tool_format in ("qwen3", "qwen3_xml"):
-        # For Qwen3 formats, let the model generate freely (no JSON schema constraint)
+    elif tool_format in ("qwen3", "qwen3_xml", "mistral"):
+        # For Qwen3/Mistral formats, let the model generate freely (no JSON schema constraint)
         # Remove tool_start from stop strings so multi-call sequences work
         if isinstance(tool_data.stop, list):
             tool_data.stop = [s for s in tool_data.stop if s != tool_start]
@@ -513,8 +513,8 @@ async def generate_tool_calls(
         if precursor_text:
             tool_prompt = tool_prompt + precursor_text
 
-        # For native/Qwen3 format, add tool_start back so the model continues naturally
-        if tool_format in ("native", "qwen3", "qwen3_xml"):
+        # For native/Qwen3/Mistral format, add tool_start back so the model continues naturally
+        if tool_format in ("native", "qwen3", "qwen3_xml", "mistral"):
             tool_prompt = tool_prompt + tool_start
 
         gen_request_id = gen.get("request_id")
@@ -560,5 +560,11 @@ async def generate_tool_calls(
                             tool_call["text"], tool_start, tool_end
                         )
                     )
+            elif tool_format == "mistral":
+                generations[gen_idx]["tool_calls_parsed"] = (
+                    ToolCallProcessor.from_mistral(
+                        tool_call["text"], tool_start, tool_end or ""
+                    )
+                )
 
     return generations

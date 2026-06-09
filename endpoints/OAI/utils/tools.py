@@ -121,8 +121,14 @@ class ToolCallProcessor:
         matches = re.findall(pattern, text, re.DOTALL)
 
         if not matches:
+            # Tool start may be in the prompt rather than the generated text;
+            # prepend it and retry.
+            prepended = tool_start + text
+            matches = re.findall(pattern, prepended, re.DOTALL)
+
+        if not matches:
             pattern = rf"{start_re}\s*(.*)"
-            matches = re.findall(pattern, text, re.DOTALL)
+            matches = re.findall(pattern, tool_start + text, re.DOTALL)
             if matches and tool_end in text:
                 matches[0] = matches[0].rsplit(tool_end, 1)[0]
 
@@ -166,6 +172,70 @@ class ToolCallProcessor:
 
         if not tool_calls:
             logger.warning(f"No tool calls parsed from Qwen3 output: {raw_text}")
+
+        return tool_calls
+
+    @staticmethod
+    def from_mistral(
+        raw_text: str,
+        tool_start: str = "[TOOL_CALLS]",
+        tool_end: str = "",
+    ) -> List[ToolCall]:
+        """Parse Mistral-style tool calls into ToolCall objects.
+
+        Mistral (Medium 3.5, etc.) format per call:
+            [TOOL_CALLS]name[ARGS]{"key": "value"}
+
+        Multiple tool calls chain by repeating the start marker:
+            [TOOL_CALLS]name1[ARGS]{...}[TOOL_CALLS]name2[ARGS]{...}
+
+        The assistant turn naturally terminates with </s>.
+        """
+
+        text = raw_text.strip()
+
+        # tool_start may have been consumed as a stop token during the main
+        # generation. Prepend it so the split below works uniformly.
+        if not text.startswith(tool_start):
+            text = tool_start + text
+
+        # Strip trailing EOS if the model emitted it
+        for eos in ("</s>",):
+            if text.endswith(eos):
+                text = text[: -len(eos)].rstrip()
+                break
+
+        raw_calls = [chunk for chunk in text.split(tool_start) if chunk.strip()]
+
+        tool_calls = []
+        for idx, raw_call in enumerate(raw_calls):
+            if "[ARGS]" not in raw_call:
+                logger.warning(
+                    f"Mistral tool call missing [ARGS] separator: {raw_call}"
+                )
+                continue
+
+            name, args_str = raw_call.split("[ARGS]", 1)
+            name = name.strip()
+            args_str = args_str.strip()
+
+            try:
+                args = json.loads(args_str) if args_str else {}
+            except json.JSONDecodeError:
+                logger.warning(
+                    f"Could not parse Mistral tool call args: {args_str}"
+                )
+                args = {}
+
+            tool_calls.append(
+                ToolCall(
+                    index=idx,
+                    function={"name": name, "arguments": json.dumps(args)},
+                )
+            )
+
+        if not tool_calls:
+            logger.warning(f"No tool calls parsed from Mistral output: {raw_text}")
 
         return tool_calls
 

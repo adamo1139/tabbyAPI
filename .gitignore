@@ -187,12 +187,6 @@ models/*
 loras/*
 !loras/place_your_loras_here.txt
 
-# Templates folder
-templates/*
-!templates/place_your_templates_here.txt
-!templates/alpaca.jinja
-!templates/chatml.jinja
-
 # Tool calling templates folder
 templates/tool_calls/*
 !templates/tool_calls
